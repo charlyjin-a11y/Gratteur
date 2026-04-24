@@ -199,7 +199,7 @@ Verifiez la commande dans Shopify.
                 "Content-Type": "application/json",
             },
             json={
-                "from": "Gratteur <onboarding@resend.dev>",
+                "from": "Gratteur <gratteur@jilypet.com>",
                 "to": [EMAIL_TO],
                 "subject": subject,
                 "text": body,
