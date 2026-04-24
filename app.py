@@ -62,9 +62,15 @@ def is_abo1(order):
 def extract_info(order):
     """Extract client info from order"""
     shipping = order.get("shipping_address", {}) or {}
+    # order_name: try "name" first, then build from "order_number"
+    order_name = order.get("name", "")
+    if not order_name:
+        order_number = order.get("order_number", "")
+        if order_number:
+            order_name = f"#{order_number}"
     return {
         "date": order.get("created_at", ""),
-        "order_name": order.get("name", ""),
+        "order_name": order_name,
         "email": order.get("email", "") or "",
         "tel": (shipping.get("phone", "") or "").replace(" ", ""),
         "nom": (shipping.get("last_name", "") or "").upper(),
@@ -210,8 +216,9 @@ def handle_order():
         return jsonify({"error": "Invalid signature"}), 401
 
     order = request.json
-    order_name = order.get("name", "?")
+    order_name = order.get("name", "") or f"#{order.get('order_number', '?')}"
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Commande recue: {order_name}")
+    print(f"  Debug - name: {order.get('name')}, order_number: {order.get('order_number')}")
 
     # Check if Abo-1
     if not is_abo1(order):
