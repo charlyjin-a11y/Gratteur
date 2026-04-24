@@ -8,8 +8,7 @@ import json
 import hmac
 import hashlib
 import base64
-import smtplib
-from email.mime.text import MIMEText
+import requests as http_requests
 from datetime import datetime
 
 from flask import Flask, request, jsonify
@@ -23,8 +22,7 @@ SHOPIFY_WEBHOOK_SECRET = os.environ.get("SHOPIFY_WEBHOOK_SECRET", "")
 SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "11VW1DxD315CMWMbmqIiLi_TODxJ1Q1BtPAnaeJLxEzU")
 WORKSHEET_NAME = os.environ.get("WORKSHEET_NAME", "Feuille 1")
 EMAIL_TO = os.environ.get("EMAIL_TO", "hello@jilypet.com")
-SMTP_USER = os.environ.get("SMTP_USER", "")
-SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 SKU_ABO1 = "LIVRAISONOFFERTE"
 
 # Google Sheets connection
@@ -171,8 +169,8 @@ def add_to_sheet(worksheet, info):
 
 
 def send_alert(info, matched_fields):
-    """Send email alert for doublon"""
-    if not SMTP_USER or not SMTP_PASSWORD:
+    """Send email alert for doublon via Resend API"""
+    if not RESEND_API_KEY:
         print(f"[ALERTE] DOUBLON detecte mais email non configure: {info['order_name']}")
         return
 
@@ -193,17 +191,25 @@ Ce client a deja utilise la promo -50%.
 Verifiez la commande dans Shopify.
 """
 
-    msg = MIMEText(body)
-    msg["Subject"] = subject
-    msg["From"] = SMTP_USER
-    msg["To"] = EMAIL_TO
-
     try:
-        with smtplib.SMTP("smtp.gmail.com", 587, timeout=10) as server:
-            server.starttls()
-            server.login(SMTP_USER, SMTP_PASSWORD)
-            server.sendmail(SMTP_USER, EMAIL_TO, msg.as_string())
-        print(f"  Email alerte envoye pour {info['order_name']}")
+        response = http_requests.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {RESEND_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "from": "Gratteur <onboarding@resend.dev>",
+                "to": [EMAIL_TO],
+                "subject": subject,
+                "text": body,
+            },
+            timeout=10,
+        )
+        if response.status_code == 200:
+            print(f"  Email alerte envoye pour {info['order_name']}")
+        else:
+            print(f"  [ERREUR] Email Resend: {response.status_code} - {response.text}")
     except Exception as e:
         print(f"  [ERREUR] Email: {e}")
 
