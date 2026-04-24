@@ -93,25 +93,43 @@ def lookup_client(worksheet, info):
 
         score = 0
         fields = []
+        row_email = str(row[2]).strip().lower()
         row_tel = str(row[3]).strip().replace("+33", "0").replace(" ", "")
         row_nom = str(row[4]).strip().upper()
+        row_prenom = str(row[5]).strip().upper()
         row_adresse = str(row[6]).strip().upper()
         row_zip = str(row[7]).strip()
 
         client_tel = info["tel"].replace("+33", "0").replace(" ", "")
+        client_email = info["email"].strip().lower()
+        client_prenom = info["prenom"].strip().upper()
 
+        # 1. Email
+        if client_email and row_email and client_email == row_email:
+            score += 1
+            fields.append(f"Email: {client_email}")
+
+        # 2. Code postal
         if info["code_postal"] and row_zip and info["code_postal"] == row_zip:
             score += 1
             fields.append(f"ZIP: {info['code_postal']}")
 
+        # 3. Adresse
         if info["adresse"] and row_adresse and info["adresse"] == row_adresse:
             score += 1
             fields.append(f"Adresse: {info['adresse']}")
 
+        # 4. Nom
         if info["nom"] and row_nom and info["nom"] == row_nom:
             score += 1
             fields.append(f"Nom: {info['nom']}")
 
+        # 5. Prenom
+        if client_prenom and row_prenom and client_prenom == row_prenom:
+            score += 1
+            fields.append(f"Prenom: {client_prenom}")
+
+        # 6. Telephone
         if client_tel and row_tel and client_tel == row_tel:
             score += 1
             fields.append(f"Tel: {client_tel}")
