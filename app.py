@@ -146,8 +146,8 @@ def lookup_client(worksheet, info):
     return best_score >= 2, matched_fields
 
 
-def add_to_sheet(worksheet, info):
-    """Add new client to Google Sheet"""
+def add_to_sheet(worksheet, info, statut="NOUVEAU"):
+    """Add client to Google Sheet"""
     try:
         dt = datetime.fromisoformat(info["date"].replace("Z", "+00:00"))
         date_str = dt.strftime("%d/%m/%Y %H:%M")
@@ -163,9 +163,10 @@ def add_to_sheet(worksheet, info):
         info["prenom"],
         info["adresse"],
         info["code_postal"],
-        "NOUVEAU",
+        statut,
     ]
     worksheet.append_row(row, value_input_option="USER_ENTERED")
+    print(f"  -> Ajout au sheet: {info['prenom']} {info['nom']} ({statut})")
 
 
 def send_alert(info, matched_fields):
@@ -240,13 +241,16 @@ def handle_order():
         worksheet = get_worksheet()
         is_doublon, matched_fields = lookup_client(worksheet, info)
 
+        # Toujours ajouter au sheet (nouveau ou gratteur)
         if is_doublon:
+            info_with_status = info.copy()
             print(f"  GRATTEUR! Champs: {matched_fields}")
+            add_to_sheet(worksheet, info, statut="DOUBLON")
             send_alert(info, matched_fields)
             return jsonify({"status": "doublon", "matched": matched_fields}), 200
         else:
             print(f"  Nouveau client, ajout au sheet")
-            add_to_sheet(worksheet, info)
+            add_to_sheet(worksheet, info, statut="NOUVEAU")
             return jsonify({"status": "nouveau"}), 200
     except Exception as e:
         print(f"  [ERREUR] {e}")
