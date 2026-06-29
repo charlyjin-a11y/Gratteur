@@ -240,21 +240,27 @@ def handle_order():
     try:
         worksheet = get_worksheet()
         is_doublon, matched_fields = lookup_client(worksheet, info)
-
-        # Toujours ajouter au sheet (nouveau ou gratteur)
-        if is_doublon:
-            info_with_status = info.copy()
-            print(f"  GRATTEUR! Champs: {matched_fields}")
-            add_to_sheet(worksheet, info, statut="DOUBLON")
-            send_alert(info, matched_fields)
-            return jsonify({"status": "doublon", "matched": matched_fields}), 200
-        else:
-            print(f"  Nouveau client, ajout au sheet")
-            add_to_sheet(worksheet, info, statut="NOUVEAU")
-            return jsonify({"status": "nouveau"}), 200
     except Exception as e:
-        print(f"  [ERREUR] {e}")
+        print(f"  [ERREUR] Lookup: {e}")
         return jsonify({"error": str(e)}), 500
+
+    # TOUJOURS ajouter au sheet (nouveau ou gratteur)
+    statut = "DOUBLON" if is_doublon else "NOUVEAU"
+    try:
+        add_to_sheet(worksheet, info, statut=statut)
+    except Exception as e:
+        print(f"  [ERREUR] Ajout sheet: {e}")
+
+    # Si gratteur, envoyer l'alerte email
+    if is_doublon:
+        print(f"  GRATTEUR! Champs: {matched_fields}")
+        try:
+            send_alert(info, matched_fields)
+        except Exception as e:
+            print(f"  [ERREUR] Alerte: {e}")
+        return jsonify({"status": "doublon", "matched": matched_fields}), 200
+    else:
+        return jsonify({"status": "nouveau"}), 200
 
 
 @app.route("/health", methods=["GET"])
