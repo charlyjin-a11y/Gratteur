@@ -60,6 +60,7 @@ def is_abo1(order):
 def extract_info(order):
     """Extract client info from order"""
     shipping = order.get("shipping_address", {}) or {}
+    billing = order.get("billing_address", {}) or {}
     # order_name: try "name" first, then build from "order_number"
     order_name = order.get("name", "")
     if not order_name:
@@ -74,7 +75,15 @@ def extract_info(order):
         "nom": (shipping.get("last_name", "") or "").upper(),
         "prenom": shipping.get("first_name", "") or "",
         "adresse": (shipping.get("address1", "") or "").upper(),
+        "adresse2": (shipping.get("address2", "") or "").upper(),
         "code_postal": shipping.get("zip", "") or "",
+        "ip": order.get("browser_ip", "") or "",
+        "tel_fact": (billing.get("phone", "") or "").replace(" ", ""),
+        "nom_fact": (billing.get("last_name", "") or "").upper(),
+        "prenom_fact": (billing.get("first_name", "") or "").upper(),
+        "adresse_fact": (billing.get("address1", "") or "").upper(),
+        "adresse2_fact": (billing.get("address2", "") or "").upper(),
+        "code_postal_fact": billing.get("zip", "") or "",
     }
 
 
@@ -82,68 +91,91 @@ def lookup_client(worksheet, info):
     """
     Check if client exists in sheet.
     Returns (is_doublon, matched_fields)
-    Requires 2+ field matches for DOUBLON.
+    Champs FORTS (1 match = DOUBLON) : Email, Tel, IP
+    Champs FAIBLES (2 matchs = DOUBLON) : Nom, Prenom, Adresse, Code postal
+    L'adresse de facturation est aussi comparee.
     """
     all_values = worksheet.get_all_values()
     if len(all_values) <= 1:
         return False, []
 
-    best_score = 0
-    matched_fields = []
+    def norm_tel(t):
+        return str(t).strip().replace("+33", "0").replace(" ", "")
+
+    # Valeurs client (livraison + facturation)
+    client_email = info["email"].strip().lower()
+    client_ip = info.get("ip", "").strip()
+    client_tels = {t for t in [norm_tel(info["tel"]), norm_tel(info.get("tel_fact", ""))] if t}
+    client_noms = {n for n in [info["nom"].strip().upper(), info.get("nom_fact", "").strip().upper()] if n}
+    client_prenoms = {p for p in [info["prenom"].strip().upper(), info.get("prenom_fact", "").strip().upper()] if p}
+    client_adresses = {a for a in [
+        info["adresse"].strip().upper(),
+        info.get("adresse2", "").strip().upper(),
+        info.get("adresse_fact", "").strip().upper(),
+        info.get("adresse2_fact", "").strip().upper(),
+    ] if a}
+    client_zips = {z for z in [info["code_postal"].strip(), info.get("code_postal_fact", "").strip()] if z}
 
     for row in all_values[1:]:
-        if len(row) < 8:
+        if len(row) < 9:
             continue
 
-        score = 0
-        fields = []
         row_email = str(row[2]).strip().lower()
-        row_tel = str(row[3]).strip().replace("+33", "0").replace(" ", "")
+        row_tel = norm_tel(row[3])
         row_nom = str(row[4]).strip().upper()
         row_prenom = str(row[5]).strip().upper()
         row_adresse = str(row[6]).strip().upper()
-        row_zip = str(row[7]).strip()
+        row_adresse2 = str(row[7]).strip().upper()
+        row_zip = str(row[8]).strip()
+        row_ip = str(row[10]).strip() if len(row) > 10 else ""
+        row_adresse_fact = str(row[11]).strip().upper() if len(row) > 11 else ""
+        row_zip_fact = str(row[12]).strip() if len(row) > 12 else ""
+        row_nom_fact = str(row[13]).strip().upper() if len(row) > 13 else ""
+        row_prenom_fact = str(row[14]).strip().upper() if len(row) > 14 else ""
 
-        client_tel = info["tel"].replace("+33", "0").replace(" ", "")
-        client_email = info["email"].strip().lower()
-        client_prenom = info["prenom"].strip().upper()
+        row_adresses = {a for a in [row_adresse, row_adresse2, row_adresse_fact] if a}
+        row_zips = {z for z in [row_zip, row_zip_fact] if z}
+        row_noms = {n for n in [row_nom, row_nom_fact] if n}
+        row_prenoms = {p for p in [row_prenom, row_prenom_fact] if p}
 
-        # 1. Email
+        # === CHAMPS FORTS : 1 match = DOUBLON ===
         if client_email and row_email and client_email == row_email:
-            score += 1
-            fields.append(f"Email: {client_email}")
+            return True, [f"Email: {client_email}"]
 
-        # 2. Code postal
-        if info["code_postal"] and row_zip and info["code_postal"] == row_zip:
-            score += 1
-            fields.append(f"ZIP: {info['code_postal']}")
+        if client_tels and row_tel and row_tel in client_tels:
+            return True, [f"Tel: {row_tel}"]
 
-        # 3. Adresse
-        if info["adresse"] and row_adresse and info["adresse"] == row_adresse:
-            score += 1
-            fields.append(f"Adresse: {info['adresse']}")
+        if client_ip and row_ip and client_ip == row_ip:
+            return True, [f"IP: {client_ip}"]
 
-        # 4. Nom
-        if info["nom"] and row_nom and info["nom"] == row_nom:
-            score += 1
-            fields.append(f"Nom: {info['nom']}")
+        # === CHAMPS FAIBLES : 2 matchs = DOUBLON ===
+        weak_score = 0
+        weak_fields = []
 
-        # 5. Prenom
-        if client_prenom and row_prenom and client_prenom == row_prenom:
-            score += 1
-            fields.append(f"Prenom: {client_prenom}")
+        if client_noms and row_noms and client_noms & row_noms:
+            matched_nom = (client_noms & row_noms).pop()
+            weak_score += 1
+            weak_fields.append(f"Nom: {matched_nom}")
 
-        # 6. Telephone
-        if client_tel and row_tel and client_tel == row_tel:
-            score += 1
-            fields.append(f"Tel: {client_tel}")
+        if client_prenoms and row_prenoms and client_prenoms & row_prenoms:
+            matched_prenom = (client_prenoms & row_prenoms).pop()
+            weak_score += 1
+            weak_fields.append(f"Prenom: {matched_prenom}")
 
-        if score > best_score:
-            best_score = score
-            matched_fields = fields
+        if client_adresses and row_adresses and client_adresses & row_adresses:
+            matched_addr = (client_adresses & row_adresses).pop()
+            weak_score += 1
+            weak_fields.append(f"Adresse: {matched_addr}")
 
-    # DOUBLON si 2 champs ou plus matchent
-    return best_score >= 2, matched_fields
+        if client_zips and row_zips and client_zips & row_zips:
+            matched_zip = (client_zips & row_zips).pop()
+            weak_score += 1
+            weak_fields.append(f"ZIP: {matched_zip}")
+
+        if weak_score >= 2:
+            return True, weak_fields
+
+    return False, []
 
 
 def add_to_sheet(worksheet, info, statut="NOUVEAU"):
@@ -162,8 +194,14 @@ def add_to_sheet(worksheet, info, statut="NOUVEAU"):
         info["nom"],
         info["prenom"],
         info["adresse"],
+        info.get("adresse2", ""),
         info["code_postal"],
         statut,
+        info.get("ip", ""),
+        info.get("adresse_fact", ""),
+        info.get("code_postal_fact", ""),
+        info.get("nom_fact", ""),
+        info.get("prenom_fact", ""),
     ]
     worksheet.append_row(row, value_input_option="USER_ENTERED")
     print(f"  -> Ajout au sheet: {info['prenom']} {info['nom']} ({statut})")
@@ -182,8 +220,13 @@ Commande : {info['order_name']}
 Client : {info['prenom']} {info['nom']}
 Email : {info['email']}
 Telephone : {info['tel']}
-Adresse : {info['adresse']}
+Adresse livraison : {info['adresse']}
+Adresse complementaire : {info.get('adresse2', '')}
 Code postal : {info['code_postal']}
+Adresse facturation : {info.get('adresse_fact', 'N/A')}
+Code postal fact. : {info.get('code_postal_fact', 'N/A')}
+Nom facturation : {info.get('prenom_fact', '')} {info.get('nom_fact', '')}
+IP : {info.get('ip', 'N/A')}
 
 Champs qui ont matche :
 {chr(10).join('- ' + f for f in matched_fields)}
