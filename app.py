@@ -8,6 +8,7 @@ import json
 import hmac
 import hashlib
 import base64
+import unicodedata
 import requests as http_requests
 from datetime import datetime
 
@@ -16,6 +17,19 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 app = Flask(__name__)
+
+
+def normalize(text):
+    """Normalise un texte pour comparaison : majuscules, sans accents, sans espaces multiples."""
+    if not text:
+        return ""
+    text = str(text).strip().upper()
+    # Retirer les accents (é -> E, ô -> O, etc.)
+    text = unicodedata.normalize("NFD", text)
+    text = "".join(c for c in text if unicodedata.category(c) != "Mn")
+    # Reduire les espaces multiples en un seul
+    text = " ".join(text.split())
+    return text
 
 # Configuration via variables d'environnement
 SHOPIFY_WEBHOOK_SECRET = os.environ.get("SHOPIFY_WEBHOOK_SECRET", "")
@@ -72,18 +86,18 @@ def extract_info(order):
         "order_name": order_name,
         "email": order.get("email", "") or "",
         "tel": (shipping.get("phone", "") or "").replace(" ", ""),
-        "nom": (shipping.get("last_name", "") or "").upper(),
-        "prenom": shipping.get("first_name", "") or "",
-        "adresse": (shipping.get("address1", "") or "").upper(),
-        "adresse2": (shipping.get("address2", "") or "").upper(),
-        "code_postal": shipping.get("zip", "") or "",
+        "nom": (shipping.get("last_name", "") or "").strip(),
+        "prenom": (shipping.get("first_name", "") or "").strip(),
+        "adresse": (shipping.get("address1", "") or "").strip(),
+        "adresse2": (shipping.get("address2", "") or "").strip(),
+        "code_postal": (shipping.get("zip", "") or "").strip(),
         "ip": order.get("browser_ip", "") or "",
         "tel_fact": (billing.get("phone", "") or "").replace(" ", ""),
-        "nom_fact": (billing.get("last_name", "") or "").upper(),
-        "prenom_fact": (billing.get("first_name", "") or "").upper(),
-        "adresse_fact": (billing.get("address1", "") or "").upper(),
-        "adresse2_fact": (billing.get("address2", "") or "").upper(),
-        "code_postal_fact": billing.get("zip", "") or "",
+        "nom_fact": (billing.get("last_name", "") or "").strip(),
+        "prenom_fact": (billing.get("first_name", "") or "").strip(),
+        "adresse_fact": (billing.get("address1", "") or "").strip(),
+        "adresse2_fact": (billing.get("address2", "") or "").strip(),
+        "code_postal_fact": (billing.get("zip", "") or "").strip(),
     }
 
 
@@ -106,15 +120,15 @@ def lookup_client(worksheet, info):
     client_email = info["email"].strip().lower()
     client_ip = info.get("ip", "").strip()
     client_tels = {t for t in [norm_tel(info["tel"]), norm_tel(info.get("tel_fact", ""))] if t}
-    client_noms = {n for n in [info["nom"].strip().upper(), info.get("nom_fact", "").strip().upper()] if n}
-    client_prenoms = {p for p in [info["prenom"].strip().upper(), info.get("prenom_fact", "").strip().upper()] if p}
+    client_noms = {n for n in [normalize(info["nom"]), normalize(info.get("nom_fact", ""))] if n}
+    client_prenoms = {p for p in [normalize(info["prenom"]), normalize(info.get("prenom_fact", ""))] if p}
     client_adresses = {a for a in [
-        info["adresse"].strip().upper(),
-        info.get("adresse2", "").strip().upper(),
-        info.get("adresse_fact", "").strip().upper(),
-        info.get("adresse2_fact", "").strip().upper(),
+        normalize(info["adresse"]),
+        normalize(info.get("adresse2", "")),
+        normalize(info.get("adresse_fact", "")),
+        normalize(info.get("adresse2_fact", "")),
     ] if a}
-    client_zips = {z for z in [info["code_postal"].strip(), info.get("code_postal_fact", "").strip()] if z}
+    client_zips = {z for z in [normalize(info["code_postal"]), normalize(info.get("code_postal_fact", ""))] if z}
 
     for row in all_values[1:]:
         if len(row) < 9:
@@ -122,16 +136,16 @@ def lookup_client(worksheet, info):
 
         row_email = str(row[2]).strip().lower()
         row_tel = norm_tel(row[3])
-        row_nom = str(row[4]).strip().upper()
-        row_prenom = str(row[5]).strip().upper()
-        row_adresse = str(row[6]).strip().upper()
-        row_adresse2 = str(row[7]).strip().upper()
-        row_zip = str(row[8]).strip()
+        row_nom = normalize(row[4])
+        row_prenom = normalize(row[5])
+        row_adresse = normalize(row[6])
+        row_adresse2 = normalize(row[7])
+        row_zip = normalize(row[8])
         row_ip = str(row[10]).strip() if len(row) > 10 else ""
-        row_adresse_fact = str(row[11]).strip().upper() if len(row) > 11 else ""
-        row_zip_fact = str(row[12]).strip() if len(row) > 12 else ""
-        row_nom_fact = str(row[13]).strip().upper() if len(row) > 13 else ""
-        row_prenom_fact = str(row[14]).strip().upper() if len(row) > 14 else ""
+        row_adresse_fact = normalize(row[11]) if len(row) > 11 else ""
+        row_zip_fact = normalize(row[12]) if len(row) > 12 else ""
+        row_nom_fact = normalize(row[13]) if len(row) > 13 else ""
+        row_prenom_fact = normalize(row[14]) if len(row) > 14 else ""
 
         row_adresses = {a for a in [row_adresse, row_adresse2, row_adresse_fact] if a}
         row_zips = {z for z in [row_zip, row_zip_fact] if z}
