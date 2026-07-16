@@ -31,6 +31,78 @@ def normalize(text):
     text = " ".join(text.split())
     return text
 
+
+def normalize_email(email):
+    """Normalise un email. Gere l'astuce Gmail : points et +alias ignores.
+    jean.dupont+promo@gmail.com -> jeandupont@gmail.com"""
+    if not email:
+        return ""
+    email = str(email).strip().lower()
+    if "@" not in email:
+        return email
+    local, domain = email.rsplit("@", 1)
+    # Retirer tout ce qui suit un +
+    if "+" in local:
+        local = local.split("+", 1)[0]
+    # Pour Gmail/Googlemail : les points sont ignores
+    if domain in ("gmail.com", "googlemail.com"):
+        local = local.replace(".", "")
+        domain = "gmail.com"
+    return f"{local}@{domain}"
+
+
+# Domaines d'emails jetables/temporaires (les plus courants)
+DISPOSABLE_DOMAINS = {
+    "yopmail.com", "yopmail.fr", "yopmail.net", "temp-mail.org", "tempmail.com",
+    "guerrillamail.com", "guerrillamail.info", "guerrillamail.net", "sharklasers.com",
+    "10minutemail.com", "10minutemail.net", "mailinator.com", "mailinator.net",
+    "throwawaymail.com", "trashmail.com", "trashmail.fr", "getnada.com",
+    "maildrop.cc", "mintemail.com", "mohmal.com", "fakeinbox.com",
+    "tempmailo.com", "temp-mail.io", "tempmail.plus", "mailnesia.com",
+    "dispostable.com", "spamgourmet.com", "jetable.org", "jetable.fr",
+    "emailondeck.com", "mytemp.email", "tempr.email", "burnermail.io",
+    "moakt.com", "luxusmail.org", "email-fake.com", "fakemail.net",
+    "tmpmail.org", "tmpmail.net", "mail-temp.com", "0clock.net",
+    "spam4.me", "grr.la", "guerrillamailblock.com", "pokemail.net",
+    "tempinbox.com", "tempmailaddress.com", "wegwerfemail.de", "mail.tm",
+}
+
+
+def is_disposable_email(email):
+    """Detecte si l'email utilise un domaine jetable/temporaire."""
+    if not email or "@" not in email:
+        return False
+    domain = str(email).strip().lower().rsplit("@", 1)[1]
+    return domain in DISPOSABLE_DOMAINS
+
+
+# Abreviations courantes dans les adresses pour normalisation
+ADDR_ABBREV = {
+    "AVENUE": "AV", "AV.": "AV", "AVE": "AV",
+    "BOULEVARD": "BD", "BLVD": "BD", "BVD": "BD", "BLD": "BD",
+    "RUE": "R", "R.": "R",
+    "PLACE": "PL", "IMPASSE": "IMP", "ALLEE": "ALL",
+    "CHEMIN": "CH", "ROUTE": "RTE", "RESIDENCE": "RES",
+    "BATIMENT": "BAT", "BAT.": "BAT", "APPARTEMENT": "APT", "APP": "APT", "APP.": "APT",
+    "SAINT": "ST", "SAINTE": "STE",
+}
+
+
+def normalize_adresse(adresse):
+    """Normalise une adresse : majuscules, sans accents, abreviations unifiees, sans ponctuation."""
+    if not adresse:
+        return ""
+    text = normalize(adresse)
+    # Retirer la ponctuation courante
+    for char in [",", ".", "-", "'"]:
+        text = text.replace(char, " ")
+    text = " ".join(text.split())
+    # Unifier les abreviations mot par mot
+    words = []
+    for word in text.split():
+        words.append(ADDR_ABBREV.get(word, word))
+    return " ".join(words)
+
 # Configuration via variables d'environnement
 SHOPIFY_WEBHOOK_SECRET = os.environ.get("SHOPIFY_WEBHOOK_SECRET", "")
 SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "11VW1DxD315CMWMbmqIiLi_TODxJ1Q1BtPAnaeJLxEzU")
@@ -81,6 +153,8 @@ def extract_info(order):
         order_number = order.get("order_number", "")
         if order_number:
             order_name = f"#{order_number}"
+    customer = order.get("customer", {}) or {}
+    client_details = order.get("client_details", {}) or {}
     return {
         "date": order.get("created_at", ""),
         "order_name": order_name,
@@ -91,13 +165,17 @@ def extract_info(order):
         "adresse": (shipping.get("address1", "") or "").strip(),
         "adresse2": (shipping.get("address2", "") or "").strip(),
         "code_postal": (shipping.get("zip", "") or "").strip(),
+        "ville": (shipping.get("city", "") or "").strip(),
         "ip": order.get("browser_ip", "") or "",
+        "customer_id": str(customer.get("id", "") or ""),
+        "user_agent": (client_details.get("user_agent", "") or "").strip(),
         "tel_fact": (billing.get("phone", "") or "").replace(" ", ""),
         "nom_fact": (billing.get("last_name", "") or "").strip(),
         "prenom_fact": (billing.get("first_name", "") or "").strip(),
         "adresse_fact": (billing.get("address1", "") or "").strip(),
         "adresse2_fact": (billing.get("address2", "") or "").strip(),
         "code_postal_fact": (billing.get("zip", "") or "").strip(),
+        "ville_fact": (billing.get("city", "") or "").strip(),
     }
 
 
@@ -105,8 +183,11 @@ def lookup_client(worksheet, info):
     """
     Check if client exists in sheet.
     Returns (is_doublon, matched_fields)
-    Champs FORTS (1 match = DOUBLON) : Email, Tel, IP
-    Champs FAIBLES (2 matchs = DOUBLON) : Nom, Prenom, Adresse, Code postal
+
+    CHAMPS FORTS (1 seul match = DOUBLON) : Email, Tel, IP, Adresse
+    COMBINAISONS :
+      - Nom ET Prenom ensemble = DOUBLON
+      - Code postal + (Nom OU Prenom) = DOUBLON
     L'adresse de facturation est aussi comparee.
     """
     all_values = worksheet.get_all_values()
@@ -117,42 +198,50 @@ def lookup_client(worksheet, info):
         return str(t).strip().replace("+33", "0").replace(" ", "")
 
     # Valeurs client (livraison + facturation)
-    client_email = info["email"].strip().lower()
+    client_email = normalize_email(info["email"])
     client_ip = info.get("ip", "").strip()
+    client_cid = info.get("customer_id", "").strip()
     client_tels = {t for t in [norm_tel(info["tel"]), norm_tel(info.get("tel_fact", ""))] if t}
     client_noms = {n for n in [normalize(info["nom"]), normalize(info.get("nom_fact", ""))] if n}
     client_prenoms = {p for p in [normalize(info["prenom"]), normalize(info.get("prenom_fact", ""))] if p}
     client_adresses = {a for a in [
-        normalize(info["adresse"]),
-        normalize(info.get("adresse2", "")),
-        normalize(info.get("adresse_fact", "")),
-        normalize(info.get("adresse2_fact", "")),
+        normalize_adresse(info["adresse"]),
+        normalize_adresse(info.get("adresse2", "")),
+        normalize_adresse(info.get("adresse_fact", "")),
+        normalize_adresse(info.get("adresse2_fact", "")),
     ] if a}
     client_zips = {z for z in [normalize(info["code_postal"]), normalize(info.get("code_postal_fact", ""))] if z}
+    client_villes = {v for v in [normalize(info.get("ville", "")), normalize(info.get("ville_fact", ""))] if v}
+    client_ua = (info.get("user_agent", "") or "").strip()
 
     for row in all_values[1:]:
         if len(row) < 9:
             continue
 
-        row_email = str(row[2]).strip().lower()
+        row_email = normalize_email(row[2])
         row_tel = norm_tel(row[3])
         row_nom = normalize(row[4])
         row_prenom = normalize(row[5])
-        row_adresse = normalize(row[6])
-        row_adresse2 = normalize(row[7])
+        row_adresse = normalize_adresse(row[6])
+        row_adresse2 = normalize_adresse(row[7])
         row_zip = normalize(row[8])
         row_ip = str(row[10]).strip() if len(row) > 10 else ""
-        row_adresse_fact = normalize(row[11]) if len(row) > 11 else ""
+        row_adresse_fact = normalize_adresse(row[11]) if len(row) > 11 else ""
         row_zip_fact = normalize(row[12]) if len(row) > 12 else ""
         row_nom_fact = normalize(row[13]) if len(row) > 13 else ""
         row_prenom_fact = normalize(row[14]) if len(row) > 14 else ""
+        row_ville = normalize(row[15]) if len(row) > 15 else ""
+        row_ville_fact = normalize(row[16]) if len(row) > 16 else ""
+        row_cid = str(row[17]).strip() if len(row) > 17 else ""
+        row_ua = str(row[18]).strip() if len(row) > 18 else ""
 
         row_adresses = {a for a in [row_adresse, row_adresse2, row_adresse_fact] if a}
         row_zips = {z for z in [row_zip, row_zip_fact] if z}
         row_noms = {n for n in [row_nom, row_nom_fact] if n}
         row_prenoms = {p for p in [row_prenom, row_prenom_fact] if p}
+        row_villes = {v for v in [row_ville, row_ville_fact] if v}
 
-        # === CHAMPS FORTS : 1 match = DOUBLON ===
+        # === CHAMPS FORTS : 1 seul match = DOUBLON ===
         if client_email and row_email and client_email == row_email:
             return True, [f"Email: {client_email}"]
 
@@ -162,32 +251,42 @@ def lookup_client(worksheet, info):
         if client_ip and row_ip and client_ip == row_ip:
             return True, [f"IP: {client_ip}"]
 
-        # === CHAMPS FAIBLES : 2 matchs = DOUBLON ===
-        weak_score = 0
-        weak_fields = []
-
-        if client_noms and row_noms and client_noms & row_noms:
-            matched_nom = (client_noms & row_noms).pop()
-            weak_score += 1
-            weak_fields.append(f"Nom: {matched_nom}")
-
-        if client_prenoms and row_prenoms and client_prenoms & row_prenoms:
-            matched_prenom = (client_prenoms & row_prenoms).pop()
-            weak_score += 1
-            weak_fields.append(f"Prenom: {matched_prenom}")
+        if client_cid and row_cid and client_cid == row_cid:
+            return True, [f"Client ID Shopify: {client_cid}"]
 
         if client_adresses and row_adresses and client_adresses & row_adresses:
             matched_addr = (client_adresses & row_adresses).pop()
-            weak_score += 1
-            weak_fields.append(f"Adresse: {matched_addr}")
+            return True, [f"Adresse: {matched_addr}"]
 
-        if client_zips and row_zips and client_zips & row_zips:
+        # === COMBINAISONS : plusieurs champs ensemble ===
+        match_nom = bool(client_noms and row_noms and client_noms & row_noms)
+        match_prenom = bool(client_prenoms and row_prenoms and client_prenoms & row_prenoms)
+        match_zip = bool(client_zips and row_zips and client_zips & row_zips)
+        match_ville = bool(client_villes and row_villes and client_villes & row_villes)
+
+        # Regle 1 : Nom ET Prenom ensemble = DOUBLON
+        if match_nom and match_prenom:
+            matched_nom = (client_noms & row_noms).pop()
+            matched_prenom = (client_prenoms & row_prenoms).pop()
+            return True, [f"Nom: {matched_nom}", f"Prenom: {matched_prenom}"]
+
+        # Regle 2 : Code postal + un autre champ (nom OU prenom) = DOUBLON
+        if match_zip and (match_nom or match_prenom):
             matched_zip = (client_zips & row_zips).pop()
-            weak_score += 1
-            weak_fields.append(f"ZIP: {matched_zip}")
+            fields = [f"ZIP: {matched_zip}"]
+            if match_nom:
+                fields.append(f"Nom: {(client_noms & row_noms).pop()}")
+            if match_prenom:
+                fields.append(f"Prenom: {(client_prenoms & row_prenoms).pop()}")
+            return True, fields
 
-        if weak_score >= 2:
-            return True, weak_fields
+        # Regle 3 : Meme navigateur (user-agent) + meme ville = suspect
+        # (user-agent seul trop commun, mais combine avec la ville c'est un signal)
+        match_ua = bool(client_ua and row_ua and client_ua == row_ua)
+        match_ville = bool(client_villes and row_villes and client_villes & row_villes)
+        if match_ua and match_ville:
+            matched_ville = (client_villes & row_villes).pop()
+            return True, [f"Navigateur identique", f"Ville: {matched_ville}"]
 
     return False, []
 
@@ -216,6 +315,10 @@ def add_to_sheet(worksheet, info, statut="NOUVEAU"):
         info.get("code_postal_fact", ""),
         info.get("nom_fact", ""),
         info.get("prenom_fact", ""),
+        info.get("ville", ""),
+        info.get("ville_fact", ""),
+        info.get("customer_id", ""),
+        info.get("user_agent", ""),
     ]
     worksheet.append_row(row, value_input_option="USER_ENTERED")
     print(f"  -> Ajout au sheet: {info['prenom']} {info['nom']} ({statut})")
@@ -240,7 +343,9 @@ Code postal : {info['code_postal']}
 Adresse facturation : {info.get('adresse_fact', 'N/A')}
 Code postal fact. : {info.get('code_postal_fact', 'N/A')}
 Nom facturation : {info.get('prenom_fact', '')} {info.get('nom_fact', '')}
+Ville : {info.get('ville', 'N/A')}
 IP : {info.get('ip', 'N/A')}
+Client ID Shopify : {info.get('customer_id', 'N/A')}
 
 Champs qui ont matche :
 {chr(10).join('- ' + f for f in matched_fields)}
@@ -300,6 +405,14 @@ def handle_order():
     except Exception as e:
         print(f"  [ERREUR] Lookup: {e}")
         return jsonify({"error": str(e)}), 500
+
+    # Email jetable = signal fort (meme si pas de doublon dans le sheet)
+    if is_disposable_email(info["email"]):
+        print(f"  EMAIL JETABLE detecte: {info['email']}")
+        if not is_doublon:
+            is_doublon = True
+            matched_fields = []
+        matched_fields = list(matched_fields) + [f"Email JETABLE: {info['email']}"]
 
     # TOUJOURS ajouter au sheet (nouveau ou gratteur)
     statut = "DOUBLON" if is_doublon else "NOUVEAU"
