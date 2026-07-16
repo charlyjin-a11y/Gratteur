@@ -218,6 +218,8 @@ def lookup_client(worksheet, info):
         if len(row) < 9:
             continue
 
+        row_order = str(row[1]).strip() if len(row) > 1 else ""
+        row_date = str(row[0]).strip() if len(row) > 0 else ""
         row_email = normalize_email(row[2])
         row_tel = norm_tel(row[3])
         row_nom = normalize(row[4])
@@ -241,52 +243,66 @@ def lookup_client(worksheet, info):
         row_prenoms = {p for p in [row_prenom, row_prenom_fact] if p}
         row_villes = {v for v in [row_ville, row_ville_fact] if v}
 
-        # === CHAMPS FORTS : 1 seul match = DOUBLON ===
+        # On collecte TOUS les champs qui matchent sur cette ligne
+        fields = []
+        has_strong = False  # au moins un champ fort
+
         if client_email and row_email and client_email == row_email:
-            return True, [f"Email: {client_email}"]
+            fields.append(f"Email: {row[2].strip()}")
+            has_strong = True
 
         if client_tels and row_tel and row_tel in client_tels:
-            return True, [f"Tel: {row_tel}"]
+            fields.append(f"Tel: {row_tel}")
+            has_strong = True
 
         if client_ip and row_ip and client_ip == row_ip:
-            return True, [f"IP: {client_ip}"]
+            fields.append(f"IP: {client_ip}")
+            has_strong = True
 
         if client_cid and row_cid and client_cid == row_cid:
-            return True, [f"Client ID Shopify: {client_cid}"]
+            fields.append(f"Client ID Shopify: {client_cid}")
+            has_strong = True
 
         if client_adresses and row_adresses and client_adresses & row_adresses:
             matched_addr = (client_adresses & row_adresses).pop()
-            return True, [f"Adresse: {matched_addr}"]
+            fields.append(f"Adresse: {matched_addr}")
+            has_strong = True
 
-        # === COMBINAISONS : plusieurs champs ensemble ===
+        # Champs "faibles"
         match_nom = bool(client_noms and row_noms and client_noms & row_noms)
         match_prenom = bool(client_prenoms and row_prenoms and client_prenoms & row_prenoms)
         match_zip = bool(client_zips and row_zips and client_zips & row_zips)
-        match_ville = bool(client_villes and row_villes and client_villes & row_villes)
-
-        # Regle 1 : Nom ET Prenom ensemble = DOUBLON
-        if match_nom and match_prenom:
-            matched_nom = (client_noms & row_noms).pop()
-            matched_prenom = (client_prenoms & row_prenoms).pop()
-            return True, [f"Nom: {matched_nom}", f"Prenom: {matched_prenom}"]
-
-        # Regle 2 : Code postal + un autre champ (nom OU prenom) = DOUBLON
-        if match_zip and (match_nom or match_prenom):
-            matched_zip = (client_zips & row_zips).pop()
-            fields = [f"ZIP: {matched_zip}"]
-            if match_nom:
-                fields.append(f"Nom: {(client_noms & row_noms).pop()}")
-            if match_prenom:
-                fields.append(f"Prenom: {(client_prenoms & row_prenoms).pop()}")
-            return True, fields
-
-        # Regle 3 : Meme navigateur (user-agent) + meme ville = suspect
-        # (user-agent seul trop commun, mais combine avec la ville c'est un signal)
         match_ua = bool(client_ua and row_ua and client_ua == row_ua)
         match_ville = bool(client_villes and row_villes and client_villes & row_villes)
-        if match_ua and match_ville:
-            matched_ville = (client_villes & row_villes).pop()
-            return True, [f"Navigateur identique", f"Ville: {matched_ville}"]
+
+        if match_nom:
+            fields.append(f"Nom: {(client_noms & row_noms).pop()}")
+        if match_prenom:
+            fields.append(f"Prenom: {(client_prenoms & row_prenoms).pop()}")
+        if match_zip:
+            fields.append(f"ZIP: {(client_zips & row_zips).pop()}")
+        if match_ville:
+            fields.append(f"Ville: {(client_villes & row_villes).pop()}")
+        if match_ua:
+            fields.append("Navigateur identique")
+
+        # === DECISION : est-ce un doublon avec cette ligne ? ===
+        is_match = False
+        if has_strong:
+            is_match = True  # 1 champ fort suffit
+        elif match_nom and match_prenom:
+            is_match = True  # Nom + Prenom
+        elif match_zip and (match_nom or match_prenom):
+            is_match = True  # Code postal + Nom/Prenom
+        elif match_ua and match_ville:
+            is_match = True  # Meme navigateur + meme ville
+
+        if is_match:
+            # On ajoute la reference a la commande precedente
+            ref = f"Commande precedente : {row_order}"
+            if row_date:
+                ref += f" (du {row_date})"
+            return True, [ref] + fields
 
     return False, []
 
@@ -330,9 +346,10 @@ def send_alert(info, matched_fields):
         print(f"[ALERTE] DOUBLON detecte mais email non configure: {info['order_name']}")
         return
 
-    subject = "GRATTEUR PROMO DETECTE"
+    subject = f"GRATTEUR DETECTE - Commande {info['order_name']}"
     body = f"""DOUBLON DETECTE
 
+=== NOUVELLE COMMANDE (le gratteur) ===
 Commande : {info['order_name']}
 Client : {info['prenom']} {info['nom']}
 Email : {info['email']}
@@ -340,14 +357,14 @@ Telephone : {info['tel']}
 Adresse livraison : {info['adresse']}
 Adresse complementaire : {info.get('adresse2', '')}
 Code postal : {info['code_postal']}
+Ville : {info.get('ville', 'N/A')}
 Adresse facturation : {info.get('adresse_fact', 'N/A')}
 Code postal fact. : {info.get('code_postal_fact', 'N/A')}
 Nom facturation : {info.get('prenom_fact', '')} {info.get('nom_fact', '')}
-Ville : {info.get('ville', 'N/A')}
 IP : {info.get('ip', 'N/A')}
 Client ID Shopify : {info.get('customer_id', 'N/A')}
 
-Champs qui ont matche :
+=== POURQUOI C'EST UN DOUBLON ===
 {chr(10).join('- ' + f for f in matched_fields)}
 
 Ce client a deja utilise la promo -50%.
