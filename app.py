@@ -214,11 +214,17 @@ def lookup_client(worksheet, info):
     client_villes = {v for v in [normalize(info.get("ville", "")), normalize(info.get("ville_fact", ""))] if v}
     client_ua = (info.get("user_agent", "") or "").strip()
 
+    current_order = str(info.get("order_name", "")).strip()
+
     for row in all_values[1:]:
         if len(row) < 9:
             continue
 
         row_order = str(row[1]).strip() if len(row) > 1 else ""
+
+        # Ne pas se comparer a soi-meme (meme numero de commande)
+        if current_order and row_order and row_order == current_order:
+            continue
         row_date = str(row[0]).strip() if len(row) > 0 else ""
         row_email = normalize_email(row[2])
         row_tel = norm_tel(row[3])
@@ -431,12 +437,23 @@ def handle_order():
             matched_fields = []
         matched_fields = list(matched_fields) + [f"Email JETABLE: {info['email']}"]
 
-    # TOUJOURS ajouter au sheet (nouveau ou gratteur)
-    statut = "DOUBLON" if is_doublon else "NOUVEAU"
+    # Verifier si la commande est deja dans le sheet (webhook envoye 2x par Shopify)
+    already_in_sheet = False
     try:
-        add_to_sheet(worksheet, info, statut=statut)
+        existing = worksheet.col_values(2)  # colonne B = N commande
+        if info.get("order_name", "") in existing:
+            already_in_sheet = True
+            print(f"  Commande {info['order_name']} deja dans le sheet, pas de re-ajout")
     except Exception as e:
-        print(f"  [ERREUR] Ajout sheet: {e}")
+        print(f"  [ERREUR] Verification doublon sheet: {e}")
+
+    # TOUJOURS ajouter au sheet (nouveau ou gratteur) sauf si deja present
+    statut = "DOUBLON" if is_doublon else "NOUVEAU"
+    if not already_in_sheet:
+        try:
+            add_to_sheet(worksheet, info, statut=statut)
+        except Exception as e:
+            print(f"  [ERREUR] Ajout sheet: {e}")
 
     # Si gratteur, envoyer l'alerte email
     if is_doublon:
